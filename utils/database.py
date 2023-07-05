@@ -1,12 +1,12 @@
 import pymysql
 import pandas as pd
 
-def mysql_db():
-    # 连接数据库肯定需要一些参数
+def mysql_db(password):
+    # 连接数据库需要一些参数，比如用户名、密码、端口号、数据库名
     connection = pymysql.connect(host='172.31.50.91',
                            port=3306,
                            user='guest',
-                           password="MH#123456"
+                           password=password
                            )
     return connection
 

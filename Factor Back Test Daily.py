@@ -158,22 +158,13 @@ class StockPool:
         self.symbols = symbols  # 股票代码
         self.start_date = start_date  # 日期
         self.end_date = end_date
-
         # 如果symbols为空，则默认为沪深300
         if symbols is None:
-            connection = mysql_db()  # 连接数据库
-            sql = f"SELECT td, code FROM astocks.indexweight WHERE td between {start_date} AND {end_date} AND indexnum = '000300.SH';"
-            cursor = connection.cursor()
-            cursor.execute(sql)
-            datas = cursor.fetchall()
-            datas = pd.DataFrame(datas)
-            datas.columns = ['td', 'code']
-            dates = list(datas['td'].unique())
-            groups = datas.groupby('td')
-            symbols = list(groups.get_group(dates[0])['code'])
-            self.symbols = symbols
-            self.dates = dates
-            self.groups = groups
+            df = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_indexweight.csv')
+            df = df.loc[(df['td'] >= start_date) & (df['td'] <= end_date) & (df['indexnum'] == '000300.SH')]
+            date_list = list(df['td'].unique())
+            self.symbols = list(df.loc[df['td'] == date_list[0], 'code'])
+            self.dates = date_list
         else:
             self.dates = get_quarter_list(start_date, end_date)
 
@@ -251,16 +242,20 @@ class BackTest:
         self.weights = weights
 
     def run(self):
-        original_datas = self.pool.get_datas(factor_name=self.factor_name, start_date=self.start_date,
-                                             end_date=self.end_date)  # 获取数据
-        original_prices = self.pool.get_price(start_date=self.start_date, end_date=self.end_date)  # 获取价格
+        # 获取数据并更新股票池
+        original_datas = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv')
+        # 取出td, codenum, PB三列
+        original_datas = original_datas[['td', 'codenum', self.factor_name]]
+        original_prices = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market.csv')
+        original_prices = original_prices[['td', 'codenum', 'close']]
         original_datas = original_datas.merge(original_prices, on=['td', 'codenum'])  # 合并数据
+        original_datas['ROE'] = 1 / original_datas[self.factor_name]
         self.turnover_dates = list(original_datas['td'].unique())  # 获取每个季度的最后一天的日期
         for date in self.turnover_dates:
             print('回测日期：', date)
             # 获取数据并更新股票池
             datas = original_datas[original_datas['td'] == date]  # 获取当前日期的数据
-            datas = datas.sort_values(by=['factor', 'codenum'], ascending=False)  # 按照因子大小和股票代码排序,降序
+            datas = datas.sort_values(['ROE', 'codenum'], ascending=False)  # 按照因子大小和股票代码排序,降序
             datas = datas.reset_index(drop=True)  # 重置索引
 
             datas = datas.head(int(len(self.pool.symbols)*0.1))  # 取前10%股票
@@ -278,16 +273,17 @@ class BackTest:
 
             # 如果weights为random，则随机生成权重,否则默认为等权重
             if self.weights == 'random':
-                weights = np.random.random(int(len(self.pool.symbols)*0.1))
+                weights = np.random.random(len(self.pool.symbols))
                 weights = weights / np.sum(weights)
             else:
-                weights = np.ones(int(len(self.pool.symbols)*0.1)) / (int(len(self.pool.symbols)*0.1))  # 默认权重为等权重
+                weights = np.ones(len(self.pool.symbols)) / (len(self.pool.symbols))  # 默认权重为等权重
             weights = pd.DataFrame(weights, index=symbols)  # 转换为DataFrame格式
             weights.columns = ['weights']
 
             datas = datas.merge(prices, on=['td', 'codenum'], how='left')  # 合并datas和prices
             # 合并datas和weights
             datas = datas.merge(weights, left_on='codenum', right_index=True, how='left')
+            print(datas)
             datas['shares'] = datas['weights'] * self.account.current_balance / datas['close']  # 按照权重计算每只股票的持仓数量
             self.account.current_balance -= np.sum(datas['shares'] * datas['close'])  # 调整账户余额
             # 保存持仓数量到account的持仓数量字典中

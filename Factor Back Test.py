@@ -9,6 +9,7 @@ import calendar
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from scipy.stats import spearmanr
+import pymysql
 
 
 # 获取从start_date到end_date之间每个季度的最后一天，即3、6、9、12月的最后一天
@@ -74,9 +75,9 @@ def is_valid_date(date):
     return True
 
 
-def check_factor(factor):
+def check_factor(factor, password):
     # 检查astocks.finance_deriv表中是否有名为factor的属性列
-    connection = mysql_db()  # 连接数据库
+    connection = mysql_db(password=password)  # 连接数据库
     sql = f"SELECT {factor} FROM astocks.finance_deriv WHERE ;"
     try:
         cursor = connection.cursor()
@@ -153,15 +154,16 @@ class Account:
 
 # 股票池类
 class StockPool:
-    def __init__(self, start_date, end_date, symbols=None):
+    def __init__(self, start_date, end_date, password, symbols=None):
 
         self.symbols = symbols  # 股票代码
         self.start_date = start_date  # 日期
         self.end_date = end_date
+        self.password = password
 
         # 如果symbols为空，则默认为沪深300
         if symbols is None:
-            connection = mysql_db()  # 连接数据库
+            connection = mysql_db(password=self.password)  # 连接数据库
             sql = f"SELECT td, code FROM astocks.indexweight WHERE td between {start_date} AND {end_date} AND indexnum = '000300.SH';"
             cursor = connection.cursor()
             cursor.execute(sql)
@@ -185,8 +187,8 @@ class StockPool:
         :return: 返回数据
         """
         # 从数据库中获取股票数据
-        check_factor(factor_name)
-        connection = mysql_db()
+        check_factor(factor_name, self.password)
+        connection = mysql_db(password=self.password)
         sql = f"SELECT fd, codenum, {factor_name} " \
               f"FROM astocks.finance_deriv " \
               f"WHERE codenum IN %s AND fd between {start_date} AND {end_date};"
@@ -202,7 +204,7 @@ class StockPool:
         return self.datas
 
     def get_price(self, start_date, end_date):
-        connection = mysql_db()
+        connection = mysql_db(password=self.password)
         sql = f"SELECT td, codenum, close FROM astocks.market WHERE codenum IN %s AND td BETWEEN {start_date} AND {end_date};"
         cursor = connection.cursor()
         cursor.execute(sql, (self.symbols,))
@@ -217,7 +219,7 @@ class StockPool:
 
 # 回测类
 class BackTest:
-    def __init__(self, factor_name, initial_capital=100000, symbols=None,
+    def __init__(self, factor_name, password, initial_capital=100000, symbols=None,
                  start_date=int(time.strftime('%Y%m%d', time.localtime(time.time() - 365 * 24 * 60 * 60))),
                  end_date=int(time.strftime('%Y%m%d', time.localtime(time.time()))),
                  weights='equal'
@@ -241,7 +243,7 @@ class BackTest:
         # 初始化
         self.start_date = start_date
         self.end_date = end_date
-        self.pool = StockPool(symbols=symbols, start_date=start_date, end_date=end_date)
+        self.pool = StockPool(symbols=symbols, start_date=start_date, end_date=end_date, password=password)
         self.symbols = symbols
         symbols = self.pool.symbols
         self.account = Account(initial_capital=initial_capital, symbols=symbols)
@@ -255,7 +257,8 @@ class BackTest:
                                              end_date=self.end_date)  # 获取数据
         original_prices = self.pool.get_price(start_date=self.start_date, end_date=self.end_date)  # 获取价格
         for i, quarter_date in enumerate(self.turnover_dates[:-1]):
-            print('回测日期：', quarter_date, '~', self.turnover_dates[i + 1], '...')
+            # 回测进度条显示
+            print(f'回测进度：{i + 1}/{len(self.turnover_dates) - 1}')
 
             # 获取数据并更新股票池
             datas = original_datas[original_datas['td'] == quarter_date]  # 获取当前日期的数据
@@ -268,7 +271,7 @@ class BackTest:
             symbols = self.pool.symbols  # 获取股票池中的股票
             self.account.symbols = symbols  # 更新account的股票池
             self.pool.symbols = sorted(self.pool.symbols)  # 对股票池中的股票代码进行排序
-            print('股票池：', self.pool.symbols)
+            # print('股票池：', self.pool.symbols)
 
             # 初始化account的持仓数量字典
             for symbol in symbols:
@@ -353,5 +356,15 @@ class BackTest:
 pd.set_option('display.max_rows', 30000)  # 设置最大行数
 pd.set_option('display.max_columns', 30)  # 设置最大列数
 
-backtest = BackTest(factor_name='EPS', start_date=20191231, end_date=20221231)
+# 输入密码，错误则重新输入
+password = input('请输入密码：')
+# 如果数据库链接失败，则重新输入密码
+while True:
+    try:
+        conn = mysql_db(password=password)
+        break
+    except:
+        password = input('密码错误，请重新输入：')
+print('数据库连接成功！开始回测！')
+backtest = BackTest(factor_name='EPS', start_date=20191231, end_date=20221231, password=password)
 backtest.run()
