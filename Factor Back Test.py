@@ -314,6 +314,7 @@ class BackTest:
         value_history = pd.DataFrame(self.account.value_history, columns=['date', 'portfolio_value'])
         value_history.to_csv('portfolio_value.csv', index=False)
         self.plot()
+        self.plot_return()
 
     # 定义绘图函数
     def plot(self):
@@ -351,6 +352,42 @@ class BackTest:
                      arrowprops=dict(facecolor='red', arrowstyle='->'))
 
         plt.show()
+
+    # 定义每日收益柱状图绘制函数
+    def plot_return(self):
+        return_history = []
+        plt.figure(figsize=(15, 5))
+        # 计算每日收益，用value_history的当前值减去前一天的值
+        for i in range(1, len(self.account.value_history)):
+            return_history.append(
+                [self.account.value_history[i][0], self.account.value_history[i][1] - self.account.value_history[i - 1][
+                    1]])
+        return_history = pd.DataFrame(return_history, columns=['date', 'return'])
+        return_history['date'] = pd.to_datetime(return_history['date'], format='%Y%m%d')
+        # 绘制每日收益柱状图,红色为正收益，绿色为负收益
+        plt.bar(return_history['date'][return_history['return'] > 0], return_history['return'][return_history['return'] > 0], color='red')
+        plt.bar(return_history['date'][return_history['return'] < 0], return_history['return'][return_history['return'] < 0], color='green')
+        plt.xlabel('Date')
+        plt.ylabel('Return')
+        plt.title('Daily Return')
+        plt.show()
+
+    # 计算RankIC
+    def RankIC(df):
+        # 计算每日的RankIC
+        RankIC = []
+        dates = sorted(df['td'].unique())
+        df = df.dropna()
+        print(dates)
+        for date in dates:
+            # 计算每日的RankIC
+            df_tmp = df[df['td'] == date]
+            corr = spearmanr(df_tmp['return_rank'], df_tmp['factor_rank'])[0]
+            print('date:', date, 'corr:', corr)
+            RankIC.append([date, corr])
+        return RankIC
+
+
 
 
 pd.set_option('display.max_rows', 30000)  # 设置最大行数
