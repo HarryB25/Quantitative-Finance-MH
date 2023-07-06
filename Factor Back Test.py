@@ -1,15 +1,16 @@
-from utils.database import mysql_db
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import time
-import re
-from itertools import product
 import calendar
+import re
+import time
 from datetime import datetime
+
+import matplotlib.pyplot as plt
+import numpy as np
+# from utils.RankIC import RankIC
+import pandas as pd
 from dateutil.relativedelta import relativedelta
 from scipy.stats import spearmanr
-import pymysql
+
+from utils.database import mysql_db
 
 
 # 获取从start_date到end_date之间每个季度的最后一天，即3、6、9、12月的最后一天
@@ -80,9 +81,7 @@ def check_factor(factor, password):
     connection = mysql_db(password=password)  # 连接数据库
     sql = f"SELECT {factor} FROM astocks.finance_deriv WHERE ;"
     try:
-        cursor = connection.cursor()
-        cursor.execute(sql)
-        datas = cursor.fetchall()
+        datas = pd.read_sql(sql, connection)
         if len(datas) == 0:
             raise Exception(f"astocks.finance_deriv表中没有名为{factor}的属性列")
     except Exception as e:
@@ -192,10 +191,7 @@ class StockPool:
         sql = f"SELECT fd, codenum, {factor_name} " \
               f"FROM astocks.finance_deriv " \
               f"WHERE codenum IN %s AND fd between {start_date} AND {end_date};"
-        cursor = connection.cursor()  # 建立游标
-        cursor.execute(sql, (self.symbols,))  # 执行sql语句
-        datas = cursor.fetchall()  # 获取查询结果
-        datas = pd.DataFrame(datas)  # 转换为DataFrame格式
+        datas = pd.read_sql(sql, connection, params=(self.symbols,))
         datas.columns = ['td', 'codenum', 'factor']  # 重命名列名
 
         datas = datas.dropna(axis=0, how='any')  # 删除空值，不过感觉没必要，因为在数据库连接时已经删除了空值
@@ -206,10 +202,7 @@ class StockPool:
     def get_price(self, start_date, end_date):
         connection = mysql_db(password=self.password)
         sql = f"SELECT td, codenum, close FROM astocks.market WHERE codenum IN %s AND td BETWEEN {start_date} AND {end_date};"
-        cursor = connection.cursor()
-        cursor.execute(sql, (self.symbols,))
-        datas = cursor.fetchall()
-        datas = pd.DataFrame(datas)
+        datas = pd.read_sql(sql, connection, params=(self.symbols,))
         datas.columns = ['td', 'codenum', 'close']
         connection.close()
         # 线性填充空值
@@ -315,6 +308,7 @@ class BackTest:
         value_history.to_csv('portfolio_value.csv', index=False)
         self.plot()
         self.plot_return()
+        # RankIC = RankIC()
 
     # 定义绘图函数
     def plot(self):
@@ -365,8 +359,10 @@ class BackTest:
         return_history = pd.DataFrame(return_history, columns=['date', 'return'])
         return_history['date'] = pd.to_datetime(return_history['date'], format='%Y%m%d')
         # 绘制每日收益柱状图,红色为正收益，绿色为负收益
-        plt.bar(return_history['date'][return_history['return'] > 0], return_history['return'][return_history['return'] > 0], color='red')
-        plt.bar(return_history['date'][return_history['return'] < 0], return_history['return'][return_history['return'] < 0], color='green')
+        plt.bar(return_history['date'][return_history['return'] >= 0],
+                return_history['return'][return_history['return'] >= 0], color='red')
+        plt.bar(return_history['date'][return_history['return'] < 0],
+                return_history['return'][return_history['return'] < 0], color='green')
         plt.xlabel('Date')
         plt.ylabel('Return')
         plt.title('Daily Return')

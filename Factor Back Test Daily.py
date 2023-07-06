@@ -1,14 +1,15 @@
-from utils.database import mysql_db
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import time
-import re
-from itertools import product
 import calendar
+import re
+import time
 from datetime import datetime
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from dateutil.relativedelta import relativedelta
 from scipy.stats import spearmanr
+
+from utils.database import mysql_db
 
 
 # 获取从start_date到end_date之间每个季度的最后一天，即3、6、9、12月的最后一天
@@ -132,9 +133,14 @@ class Account:
 
     def sell_all(self, prices):
         for symbol in self.symbols:
-            price = prices.loc[prices['codenum'] == symbol, 'close'].values[0]
-            self.current_balance += self.positions[symbol] * price
-            self.positions[symbol] = 0
+            # 判断prices中是否有symbol的数据
+            data = prices.loc[prices['codenum'] == symbol, 'close']
+            if len(data) == 0:
+                continue
+            else:
+                price = data.values[0]
+                self.current_balance += self.positions[symbol] * price
+                self.positions[symbol] = 0
         self.positions = {}
 
     def update_return(self):
@@ -221,6 +227,7 @@ class BackTest:
         :param end_date: 结束日期
         :param weights: 权重方式
         """
+
         # 参数合法性检查
         is_valid_date(start_date)
         is_valid_date(end_date)
@@ -245,26 +252,32 @@ class BackTest:
         # 获取数据并更新股票池
         original_datas = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv')
         # 取出td, codenum, PB三列
+        original_datas = original_datas[
+            (original_datas['td'] >= self.start_date) & (original_datas['td'] <= self.end_date)]
         original_datas = original_datas[['td', 'codenum', self.factor_name]]
+        original_datas[f'{self.factor_name}'] = 1 / original_datas[f'{self.factor_name}']
         original_prices = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market.csv')
+        original_prices = original_prices[
+            (original_prices['td'] >= self.start_date) & (original_prices['td'] <= self.end_date)]
         original_prices = original_prices[['td', 'codenum', 'close']]
         original_datas = original_datas.merge(original_prices, on=['td', 'codenum'])  # 合并数据
-        original_datas['ROE'] = 1 / original_datas[self.factor_name]
+        # original_datas['ROE'] = 1 / original_datas[self.factor_name]
         self.turnover_dates = list(original_datas['td'].unique())  # 获取每个季度的最后一天的日期
-        for date in self.turnover_dates:
-            print('回测日期：', date)
-            # 获取数据并更新股票池
-            datas = original_datas[original_datas['td'] == date]  # 获取当前日期的数据
-            datas = datas.sort_values(['ROE', 'codenum'], ascending=False)  # 按照因子大小和股票代码排序,降序
-            datas = datas.reset_index(drop=True)  # 重置索引
 
-            datas = datas.head(int(len(self.pool.symbols)*0.1))  # 取前10%股票
-            self.pool.symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
-            prices = original_prices[original_prices['td'] == date]  # 获取当前日期的股票价格
-            dates = list(prices['td'].unique())  # 获取当前日期的股票价格的日期列表
-            symbols = self.pool.symbols  # 获取股票池中的股票
+        for i, date in enumerate(self.turnover_dates):
+            print('回测日期：', date)
+            # 获取昨日股票池的今日价格
+            prices = original_datas[original_datas['td'] == date][['codenum', 'close']]
+            if i > 0:
+                self.account.sell_all(prices)  # 卖出所有股票
+            datas = original_datas[original_datas['td'] == date]  # 获取当前日期的数据
+            symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
+            datas = datas.sort_values([f'{self.factor_name}', 'codenum'], ascending=False)  # 按照因子大小和股票代码排序,降序
+            datas = datas.reset_index(drop=True)  # 重置索引
+            datas = datas.head(int(len(symbols) * 0.05))  # 取前10%股票
+            symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
+            self.pool.symbols = symbols  # 获取当前日期的股票代码列表
             self.account.symbols = symbols  # 更新account的股票池
-            self.pool.symbols = sorted(self.pool.symbols)  # 对股票池中的股票代码进行排序
             print('股票池：', self.pool.symbols)
 
             # 初始化account的持仓数量字典
@@ -279,26 +292,27 @@ class BackTest:
                 weights = np.ones(len(self.pool.symbols)) / (len(self.pool.symbols))  # 默认权重为等权重
             weights = pd.DataFrame(weights, index=symbols)  # 转换为DataFrame格式
             weights.columns = ['weights']
-
-            datas = datas.merge(prices, on=['td', 'codenum'], how='left')  # 合并datas和prices
             # 合并datas和weights
             datas = datas.merge(weights, left_on='codenum', right_index=True, how='left')
-            print(datas)
             datas['shares'] = datas['weights'] * self.account.current_balance / datas['close']  # 按照权重计算每只股票的持仓数量
             self.account.current_balance -= np.sum(datas['shares'] * datas['close'])  # 调整账户余额
+
             # 保存持仓数量到account的持仓数量字典中
             for symbol in symbols:
+                # print('股票代码：', symbol)
                 self.account.update_position(symbol, datas.loc[datas['codenum'] == symbol, 'shares'].values[0])
+
             print('日期：', date)
             prices_sub = prices
             self.account.update_portfolio_value(prices_sub, date)
             print("投资组合价值：", self.account.portfolio_value)
+
             # 输出持仓
             print("持仓：", self.account.positions)
             self.account.value_history.append([date, self.account.portfolio_value])
 
             # 更新账户股票池
-            self.account.sell_all(prices)
+            # self.account.sell_all(prices)
 
         self.account.update_return()
         self.account.update_volatility()
@@ -339,7 +353,7 @@ class BackTest:
         arrow_y = portfolio_value[start_idx]
         arrow_text = f'{max_drawdown:.2%}'
         plt.annotate(arrow_text, xy=(date_objects[start_idx], arrow_y),
-                     xytext=(date_objects[end_idx - 23], portfolio_value[end_idx]),
+                     xytext=(date_objects[start_idx + 30], arrow_y),
                      arrowprops=dict(facecolor='red', arrowstyle='->'))
 
         plt.show()
