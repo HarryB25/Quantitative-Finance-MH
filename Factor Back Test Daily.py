@@ -314,12 +314,16 @@ class BackTest:
             # 更新账户股票池
             # self.account.sell_all(prices)
 
-        self.account.update_return()
-        self.account.update_volatility()
+        self.account.update_return()  # 更新收益率
+        self.account.update_volatility()  # 更新波动率
+
         # 将self.account.value_history保存为csv文件
         value_history = pd.DataFrame(self.account.value_history, columns=['date', 'portfolio_value'])
         value_history.to_csv('portfolio_value.csv', index=False)
+
+        # 画图
         self.plot()
+        self.plot_return()
 
     # 定义绘图函数
     def plot(self):
@@ -356,6 +360,28 @@ class BackTest:
                      xytext=(date_objects[start_idx + 30], arrow_y),
                      arrowprops=dict(facecolor='red', arrowstyle='->'))
 
+        plt.show()
+
+    # 定义每日收益柱状图绘制函数
+    def plot_return(self):
+        return_history = []
+        plt.figure(figsize=(15, 5))
+        # 计算每日收益，用value_history的当前值减去前一天的值
+        for i in range(1, len(self.account.value_history)):
+            return_history.append(
+                [self.account.value_history[i][0],
+                 self.account.value_history[i][1] - self.account.value_history[i - 1][
+                     1]])
+        return_history = pd.DataFrame(return_history, columns=['date', 'return'])
+        return_history['date'] = pd.to_datetime(return_history['date'], format='%Y%m%d')
+        # 绘制每日收益柱状图,红色为正收益，绿色为负收益
+        plt.bar(return_history['date'][return_history['return'] >= 0],
+                return_history['return'][return_history['return'] >= 0], color='red')
+        plt.bar(return_history['date'][return_history['return'] < 0],
+                return_history['return'][return_history['return'] < 0], color='green')
+        plt.xlabel('Date')
+        plt.ylabel('Return')
+        plt.title('Daily Return')
         plt.show()
 
 

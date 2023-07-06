@@ -295,7 +295,6 @@ class BackTest:
                 print("投资组合价值：", self.account.portfolio_value)
                 # 输出持仓
                 print("持仓：", self.account.positions)
-                self.account.value_history.append([date, self.account.portfolio_value])
 
             # 更新账户股票池
             prices = prices.loc[prices['td'] == quarter_date]

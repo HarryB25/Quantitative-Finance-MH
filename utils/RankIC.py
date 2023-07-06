@@ -7,14 +7,7 @@ from scipy.stats import spearmanr
 from scipy.stats import ttest_1samp
 
 
-# 计算RankIC
-def RankIC(df):
-    # 计算每日的RankIC
-
-    return RankIC
-
-
-def function(star_date, end_date, factor):
+def RankIC(df, star_date, end_date, factor_name):
     # 读取因子数据
     factor = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv', index_col=0)
     # 截取20220101-20221231的数据
