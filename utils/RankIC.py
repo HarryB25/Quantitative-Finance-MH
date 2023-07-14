@@ -7,16 +7,9 @@ from scipy.stats import spearmanr
 from scipy.stats import ttest_1samp
 
 
-def RankIC(df, star_date, end_date, factor_name):
-    # 读取因子数据
-    factor = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv', index_col=0)
-    # 截取20220101-20221231的数据
-    factor = factor[(factor['td'] >= star_date) & (factor['td'] <= end_date)]
-    # 读取股票每日价格数据
-    price = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market.csv', index_col=0)
-
-    # 截取20220101-20221231的数据
-    price = price[(price['td'] >= star_date) & (price['td'] <= end_date)]
+def RankIC(factor, price):
+    print(factor.head())
+    print(price.head())
     # 保留td和codenum、close列
     price = price[['td', 'codenum', 'close']]
     # 按照日期和股票代码排序
@@ -30,13 +23,12 @@ def RankIC(df, star_date, end_date, factor_name):
     # 按照日期和股票代码排序
     factor = factor.sort_values(['td', 'codenum'])
     # 新建列ROE=1/PB
-    factor['ROE'] = 1 / factor['PB']
+    # factor['ROE'] = 1 / factor['PB']
     # 计算因子rank
-    factor['factor_rank'] = factor.groupby('td')['ROE'].rank()
+    factor['factor_rank'] = factor.groupby('td')['factor'].rank()
     factor = factor[['td', 'codenum', 'factor_rank']]
     # 保留factor左连接合并数据
     data = pd.merge(factor, price, on=['td', 'codenum'], how='left')
-    print(data[data['td'] == 20221130])
     # 计算RankIC
     RankIC = []
     dates = sorted(data['td'].unique())

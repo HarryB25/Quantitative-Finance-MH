@@ -8,8 +8,8 @@ import numpy as np
 # from utils.RankIC import RankIC
 import pandas as pd
 from dateutil.relativedelta import relativedelta
-from scipy.stats import spearmanr
 
+from utils.RankIC import RankIC
 from utils.database import mysql_db
 
 
@@ -88,18 +88,6 @@ def check_factor(factor, password):
         print(e)
     finally:
         connection.close()
-
-
-def RankIC(df1, df2):
-    # df1, df2为两个DataFrame，index为股票代码，columns为时间
-    # 计算每个时间点的IC值
-    IC = []
-    for time in df1.columns:
-        df = pd.concat([df1[time], df2[time]], axis=1)
-        df.columns = ['factor', 'return']
-        df = df.dropna()
-        IC.append(spearmanr(df['factor'], df['return'])[0])
-    return IC
 
 
 class Account:
@@ -307,7 +295,7 @@ class BackTest:
         value_history.to_csv('portfolio_value.csv', index=False)
         self.plot()
         self.plot_return()
-        # RankIC = RankIC()
+        RankIC(original_datas, original_prices)
 
     # 定义绘图函数
     def plot(self):
@@ -367,21 +355,6 @@ class BackTest:
         plt.title('Daily Return')
         plt.show()
 
-    # 计算RankIC
-    def RankIC(df):
-        # 计算每日的RankIC
-        RankIC = []
-        dates = sorted(df['td'].unique())
-        df = df.dropna()
-        print(dates)
-        for date in dates:
-            # 计算每日的RankIC
-            df_tmp = df[df['td'] == date]
-            corr = spearmanr(df_tmp['return_rank'], df_tmp['factor_rank'])[0]
-            print('date:', date, 'corr:', corr)
-            RankIC.append([date, corr])
-        return RankIC
-
 
 
 
@@ -398,5 +371,5 @@ while True:
     except:
         password = input('密码错误，请重新输入：')
 print('数据库连接成功！开始回测！')
-backtest = BackTest(factor_name='EPS', start_date=20191231, end_date=20221231, password=password)
+backtest = BackTest(factor_name='EPS', start_date=20211231, end_date=20221231, password=password)
 backtest.run()
