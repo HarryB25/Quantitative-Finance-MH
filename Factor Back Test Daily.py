@@ -1,4 +1,3 @@
-import calendar
 import re
 import time
 from datetime import datetime
@@ -6,41 +5,9 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from dateutil.relativedelta import relativedelta
 from scipy.stats import spearmanr, ttest_1samp
 
 from utils.database import mysql_db
-
-
-# 获取从start_date到end_date之间每个季度的最后一天，即3、6、9、12月的最后一天
-def get_quarter_list(start_date, end_date):
-    # 将输入的日期字符串转换为datetime对象
-    start_date = str(start_date)
-    end_date = str(end_date)
-    start_dt = datetime.strptime(start_date, '%Y%m%d')
-    end_dt = datetime.strptime(end_date, '%Y%m%d')
-
-    month_list = []
-
-    # 从start_dt到end_dt逐月迭代
-    current_dt = start_dt
-    while current_dt <= end_dt:
-        month = current_dt.month
-
-        # 检查是否是季度的最后一个月（3、6、9、12月）
-        if month in [3, 6, 9, 12]:
-            # 获取该月份的最后一天
-            last_day = calendar.monthrange(current_dt.year, month)[1]
-
-            # 创建季度最后一天的日期对象，并添加到month_list中
-            quarter_last_day = datetime(current_dt.year, month, last_day)
-            month_list.append(int(quarter_last_day.strftime('%Y%m%d')))
-
-        # 增加一个月
-        current_dt = current_dt.replace(day=1)
-        current_dt = current_dt + relativedelta(months=1)
-
-    return month_list
 
 
 def is_valid_date(date):
@@ -157,9 +124,6 @@ class StockPool:
             df = df.loc[(df['td'] >= start_date) & (df['td'] <= end_date) & (df['indexnum'] == '000300.SH')]
             date_list = list(df['td'].unique())
             self.symbols = list(df.loc[df['td'] == date_list[0], 'code'])
-            self.dates = date_list
-        else:
-            self.dates = get_quarter_list(start_date, end_date)
 
     def get_datas(self, factor_name, start_date, end_date):
         """
@@ -204,7 +168,7 @@ class BackTest:
     def __init__(self, factor_name, initial_capital=100000, symbols=None,
                  start_date=int(time.strftime('%Y%m%d', time.localtime(time.time() - 365 * 24 * 60 * 60))),
                  end_date=int(time.strftime('%Y%m%d', time.localtime(time.time()))),
-                 weights='equal'
+                 weights='equal', drawdown_num=5
                  ):
         """
         :param factor_name: 因子名称
@@ -232,8 +196,9 @@ class BackTest:
         self.account = Account(initial_capital=initial_capital, symbols=symbols)
         self.factor_name = factor_name
         self.weights = weights
-        self.turnover_dates = get_quarter_list(start_date, end_date)  # 获取每个季度的最后一天的日期
         self.weights = weights
+        self.drawdown_num = drawdown_num
+        self.turnover_dates = None
 
     def run(self):
         # 获取数据并更新股票池
@@ -327,12 +292,35 @@ class BackTest:
         max_drawdown = drawdown.max()
         max_drawdown_idx = drawdown.idxmax()
 
+        # 计算回撤个数
+        drawdown_count = len(previous_peak)
+        if drawdown_count < self.drawdown_num:
+            drawdown_num = drawdown_count - 1
+        else:
+            drawdown_num = self.drawdown_num
+
+        # 找到每一次从一个peak到突破这个peak的范围
+        drawdown_range = []
+        for i in range(len(peaks) - 1):
+            for j in range(peaks[i], peaks[i + 1]):
+                if portfolio_value[j] > portfolio_value[peaks[i]]:
+                    drawdown_range.append([peaks[i], j])
+                    break
+        # 添加最后一个peak到最后一个点的范围
+        drawdown_range.append([peaks[-1], len(portfolio_value) - 1])
+
+        # 找到最长的drawdown_num个范围
+        drawdown_range = sorted(drawdown_range, key=lambda x: x[1] - x[0], reverse=True)
+        drawdown_range = drawdown_range[:drawdown_num]
+        print(drawdown_range)
         # 找出小于max_drawdown_idx的最大的peak
         previous_peaks = [i for i in peaks if i < max_drawdown_idx]
 
         # 找到最大回撤的起始点和结束点
         start_idx = drawdown.idxmax()
         end_idx = previous_peaks[-1]
+
+        # 绘制最大的drawdown_num个回撤，使其背景为灰色
 
         # 绘制价格序列图
         plt.figure(figsize=(15, 5))
@@ -345,14 +333,23 @@ class BackTest:
         arrow_y = portfolio_value[start_idx]
         arrow_text = f'{max_drawdown:.2%}'
         plt.annotate(arrow_text, xy=(date_objects[start_idx], arrow_y),
-                     xytext=(date_objects[start_idx + 30], arrow_y),
+                     xytext=(date_objects[start_idx + 1], arrow_y),
                      arrowprops=dict(facecolor='red', arrowstyle='->'))
         # 在end_idx处标注一个绿色的点
         plt.plot(date_objects[end_idx], portfolio_value[end_idx], 'o', color='g')
         # 在start_idx处标注一个绿色的点
         plt.plot(date_objects[start_idx], portfolio_value[start_idx], 'o', color='g')
-
+        # 在每个drawdown_range[0]和drawdown_range[1]之间的区域画一个灰色的背景
+        for i in range(drawdown_num):
+            plt.axvspan(drawdown_range[i][0], drawdown_range[i][1], facecolor='gray', alpha=0.5)
         plt.show()
+        '''
+        portfolio_value = pd.Series([i[1] for i in self.account.value_history], index=date_objects)
+        portfolio_value.index = pd.to_datetime(portfolio_value.index)
+        print(portfolio_value.head())
+        pf.create_returns_tear_sheet(portfolio_value, benchmark_rets=None, return_fig=True)
+        pf.plot_drawdown_periods(portfolio_value, top=5)
+        '''
 
     # 定义每日收益柱状图绘制函数
     def plot_return(self):
@@ -441,8 +438,9 @@ class BackTest:
         plt.show()
 
 
-pd.set_option('display.max_rows', 30000)  # 设置最大行数
-pd.set_option('display.max_columns', 30)  # 设置最大列数
+if __name__ == '__main__':
+    pd.set_option('display.max_rows', 30000)  # 设置最大行数
+    pd.set_option('display.max_columns', 30)  # 设置最大列数
 
-backtest = BackTest(factor_name='PB', start_date=20211231, end_date=20221231)
-backtest.run()
+    backtest = BackTest(factor_name='PB', start_date=20220331, end_date=20221231, drawdown_num=3)
+    backtest.run()
