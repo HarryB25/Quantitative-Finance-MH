@@ -1,4 +1,6 @@
-import re
+import time
+from datetime import datetime
+
 import time
 from datetime import datetime
 
@@ -7,55 +9,10 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr, ttest_1samp
 
+from utils.check import is_valid_date, check_factor
 from utils.database import mysql_db
+from utils.portfolio_optimizer import PortfolioOptimizer, get_days_before
 
-
-def is_valid_date(date):
-    date_str = str(date)
-
-    # 检查日期长度是否为8
-    assert len(date_str) == 8, "Invalid date format. Should be YYYYMMDD."
-
-    # 检查日期是否为YYYMMDD格式
-    assert re.match(r'^[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$',
-                    date_str), "Invalid date format. Should be YYYYMMDD."
-
-    # 提取年月日
-    year = int(date_str[:4])
-    month = int(date_str[4:6])
-    day = int(date_str[6:])
-
-    # 检查年月日是否合法
-    assert year > 0, "Invalid year."
-    assert 1 <= month <= 12, "Invalid month."
-    assert 1 <= day <= 31, "Invalid day."
-
-    # 检查特殊月份日期是否合法
-    if month in [4, 6, 9, 11]:
-        assert day <= 30, "Invalid day for the given month."
-    elif month == 2:
-        if (year % 4 == 0 and year % 100 != 0) or year % 400 == 0:
-            assert day <= 29, "Invalid day for the given month."
-        else:
-            assert day <= 28, "Invalid day for the given month."
-
-    return True
-
-
-def check_factor(factor):
-    # 检查astocks.finance_deriv表中是否有名为factor的属性列
-    connection = mysql_db()  # 连接数据库
-    sql = f"SELECT {factor} FROM astocks.market_deriv WHERE ;"
-    try:
-        cursor = connection.cursor()
-        cursor.execute(sql)
-        datas = cursor.fetchall()
-        if len(datas) == 0:
-            raise Exception(f"astocks.finance_deriv表中没有名为{factor}的属性列")
-    except Exception as e:
-        print(e)
-    finally:
-        connection.close()
 
 class Account:
     def __init__(self, initial_capital, symbols=None):
@@ -168,7 +125,7 @@ class BackTest:
     def __init__(self, factor_name, initial_capital=100000, symbols=None,
                  start_date=int(time.strftime('%Y%m%d', time.localtime(time.time() - 365 * 24 * 60 * 60))),
                  end_date=int(time.strftime('%Y%m%d', time.localtime(time.time()))),
-                 weights='equal', drawdown_num=5
+                 weights='equal', drawdown_num=5, days_for_optimize=50
                  ):
         """
         :param factor_name: 因子名称
@@ -183,7 +140,7 @@ class BackTest:
         is_valid_date(start_date)
         is_valid_date(end_date)
         assert isinstance(factor_name, str), "factor_name必须为字符串"
-        assert weights in ('random', 'equal'), "权重参数为'random'或'equal'"
+        assert weights in ('minvar', 'maxsharpe', 'equal'), 'weights必须为minvar、maxsharpe或equal'
         if symbols is not None and len(symbols) > 0:
             assert isinstance(symbols, list), "symbols必须为列表"
 
@@ -199,23 +156,28 @@ class BackTest:
         self.weights = weights
         self.drawdown_num = drawdown_num
         self.turnover_dates = None
+        self.optimizer = None
+        self.days_for_optimize = days_for_optimize
 
     def run(self):
         # 获取数据并更新股票池
         original_datas = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv')
         # 取出td, codenum, PB三列
+        days_before = get_days_before(self.start_date, self.days_for_optimize)
         original_datas = original_datas[
-            (original_datas['td'] >= self.start_date) & (original_datas['td'] <= self.end_date)]
+            (original_datas['td'] >= days_before) & (original_datas['td'] <= self.end_date)]
+        self.turnover_dates = list(
+            original_datas[(original_datas['td'] >= self.start_date) & (original_datas['td'] <= self.end_date)][
+                'td'].unique())
         original_datas = original_datas[['td', 'codenum', self.factor_name]]
         original_datas[f'{self.factor_name}'] = 1 / original_datas[f'{self.factor_name}']
         original_prices = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market.csv')
         original_prices = original_prices[
-            (original_prices['td'] >= self.start_date) & (original_prices['td'] <= self.end_date)]
+            (original_prices['td'] >= days_before) & (original_prices['td'] <= self.end_date)]
         original_prices = original_prices[['td', 'codenum', 'close']]
         original_datas = original_datas.merge(original_prices, on=['td', 'codenum'])  # 合并数据
-        # original_datas['ROE'] = 1 / original_datas[self.factor_name]
-        self.turnover_dates = list(original_datas['td'].unique())  # 获取每个季度的最后一天的日期
-
+        self.optimizer = PortfolioOptimizer(original_datas, free_risk_rate=0.03, days=self.days_for_optimize)  # 初始化优化器
+        # self.turnover_dates = [20200910]
         for i, date in enumerate(self.turnover_dates):
             print('回测日期：', date)
             # 获取昨日股票池的今日价格
@@ -223,10 +185,9 @@ class BackTest:
             if i > 0:
                 self.account.sell_all(prices)  # 卖出所有股票
             datas = original_datas[original_datas['td'] == date]  # 获取当前日期的数据
-            symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
             datas = datas.sort_values([f'{self.factor_name}', 'codenum'], ascending=False)  # 按照因子大小和股票代码排序,降序
             datas = datas.reset_index(drop=True)  # 重置索引
-            datas = datas.head(int(len(symbols) * 0.05))  # 取前10%股票
+            datas = datas.head(int(len(datas['codenum'].tolist()) * 0.05))  # 取前10%股票
             symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
             self.pool.symbols = symbols  # 获取当前日期的股票代码列表
             self.account.symbols = symbols  # 更新account的股票池
@@ -237,9 +198,10 @@ class BackTest:
                 self.account.positions[symbol] = 0
 
             # 如果weights为random，则随机生成权重,否则默认为等权重
-            if self.weights == 'random':
-                weights = np.random.random(len(self.pool.symbols))
-                weights = weights / np.sum(weights)
+            if self.weights == 'minvar':
+                weights = self.optimizer.minvar(symbols, date)
+            elif self.weights == 'maxsharpe':
+                weights = self.optimizer.maxsharpe(symbols, date)
             else:
                 weights = np.ones(len(self.pool.symbols)) / (len(self.pool.symbols))  # 默认权重为等权重
             weights = pd.DataFrame(weights, index=symbols)  # 转换为DataFrame格式
@@ -339,17 +301,7 @@ class BackTest:
         plt.plot(date_objects[end_idx], portfolio_value[end_idx], 'o', color='g')
         # 在start_idx处标注一个绿色的点
         plt.plot(date_objects[start_idx], portfolio_value[start_idx], 'o', color='g')
-        # 在每个drawdown_range[0]和drawdown_range[1]之间的区域画一个灰色的背景
-        for i in range(drawdown_num):
-            plt.axvspan(drawdown_range[i][0], drawdown_range[i][1], facecolor='gray', alpha=0.5)
         plt.show()
-        '''
-        portfolio_value = pd.Series([i[1] for i in self.account.value_history], index=date_objects)
-        portfolio_value.index = pd.to_datetime(portfolio_value.index)
-        print(portfolio_value.head())
-        pf.create_returns_tear_sheet(portfolio_value, benchmark_rets=None, return_fig=True)
-        pf.plot_drawdown_periods(portfolio_value, top=5)
-        '''
 
     # 定义每日收益柱状图绘制函数
     def plot_return(self):
@@ -442,5 +394,6 @@ if __name__ == '__main__':
     pd.set_option('display.max_rows', 30000)  # 设置最大行数
     pd.set_option('display.max_columns', 30)  # 设置最大列数
 
-    backtest = BackTest(factor_name='PB', start_date=20220331, end_date=20221231, drawdown_num=3)
+    backtest = BackTest(factor_name='PE_TTM', start_date=20191231, end_date=20221231, drawdown_num=3,
+                        weights='maxsharpe')
     backtest.run()

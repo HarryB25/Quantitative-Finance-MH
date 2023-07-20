@@ -1,14 +1,12 @@
-import pymysql
 import pandas as pd
+import pymysql
+
 
 def mysql_db(password):
     # 连接数据库需要一些参数，比如用户名、密码、端口号、数据库名
-    connection = pymysql.connect(host='172.31.50.91',
-                           port=3306,
-                           user='guest',
-                           password=password
-                           )
+    connection = pymysql.connect(host='172.31.50.91', port=3306, user='guest', password=password, db='astocks', )
     return connection
+
 
 if __name__ == '__main__':
     symbols = ['000001.SZ', '000002.SZ', '000004.SZ', '000005.SZ', '000006.SZ', '000007.SZ', '000008.SZ', '000009.SZ']
