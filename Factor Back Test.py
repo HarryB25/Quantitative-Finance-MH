@@ -10,7 +10,9 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 
 from utils.RankIC import RankIC
+from utils.check import is_valid_date, check_factor
 from utils.database import mysql_db
+from utils.portfolio_optimizer import PortfolioOptimizer, get_days_before
 
 
 # 获取从start_date到end_date之间每个季度的最后一天，即3、6、9、12月的最后一天
@@ -234,9 +236,11 @@ class BackTest:
         self.weights = weights
 
     def run(self):
-        original_datas = self.pool.get_datas(factor_name=self.factor_name, start_date=self.start_date,
+        days_before = get_days_before(self.start_date, 60)  # 获取回测开始日期前60天的日期
+        original_datas = self.pool.get_datas(factor_name=self.factor_name, start_date=days_before,
                                              end_date=self.end_date)  # 获取数据
-        original_prices = self.pool.get_price(start_date=self.start_date, end_date=self.end_date)  # 获取价格
+        original_prices = self.pool.get_price(start_date=days_before, end_date=self.end_date)  # 获取价格
+        optimizer = PortfolioOptimizer(original_prices, days=60)
         for i, quarter_date in enumerate(self.turnover_dates[:-1]):
             # 回测进度条显示
             print(f'回测进度：{i + 1}/{len(self.turnover_dates) - 1}')
@@ -247,7 +251,7 @@ class BackTest:
             datas = datas.reset_index(drop=True)  # 重置索引
             self.pool.symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
             prices = original_prices[(original_prices['td'] >= quarter_date) & (
-                        original_prices['td'] <= self.turnover_dates[i + 1])]  # 获取当前日期的股票价格
+                    original_prices['td'] <= self.turnover_dates[i + 1])]  # 获取当前日期的股票价格
             dates = list(prices['td'].unique())  # 获取当前日期的股票价格的日期列表
             symbols = self.pool.symbols  # 获取股票池中的股票
             self.account.symbols = symbols  # 更新account的股票池
@@ -260,8 +264,7 @@ class BackTest:
 
             # 如果weights为random，则随机生成权重,否则默认为等权重
             if self.weights == 'random':
-                weights = np.random.random(len(symbols))
-                weights = weights / np.sum(weights)
+                weights = optimizer.maxsharpe(symbols=symbols, date=quarter_date, subject_to_weight=False)
             else:
                 weights = np.ones(len(symbols)) / len(symbols)  # 默认权重为等权重
             weights = pd.DataFrame(weights, index=symbols)  # 转换为DataFrame格式
@@ -356,8 +359,6 @@ class BackTest:
         plt.show()
 
 
-
-
 pd.set_option('display.max_rows', 30000)  # 设置最大行数
 pd.set_option('display.max_columns', 30)  # 设置最大列数
 
@@ -371,5 +372,5 @@ while True:
     except:
         password = input('密码错误，请重新输入：')
 print('数据库连接成功！开始回测！')
-backtest = BackTest(factor_name='EPS', start_date=20211231, end_date=20221231, password=password)
+backtest = BackTest(factor_name='EPS', start_date=20191231, end_date=20221231, password=password, weights='random')
 backtest.run()

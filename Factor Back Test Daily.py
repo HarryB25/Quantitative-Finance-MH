@@ -1,9 +1,6 @@
 import time
 from datetime import datetime
 
-import time
-from datetime import datetime
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -70,15 +67,18 @@ class Account:
 
 # 股票池类
 class StockPool:
-    def __init__(self, start_date, end_date, symbols=None):
-
+    def __init__(self, start_date, end_date, password, symbols=None):
         self.symbols = symbols  # 股票代码
         self.start_date = start_date  # 日期
         self.end_date = end_date
+        self.password = password
         # 如果symbols为空，则默认为沪深300
         if symbols is None:
-            df = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_indexweight.csv')
-            df = df.loc[(df['td'] >= start_date) & (df['td'] <= end_date) & (df['indexnum'] == '000300.SH')]
+            connection = mysql_db(self.password)
+            sql = f"SELECT td, code FROM astocks.indexweight WHERE td BETWEEN {start_date} AND {end_date} AND indexnum = '000300.SH';"
+            df = pd.read_sql(sql, connection)
+            # df = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_indexweight.csv')
+            # df = df.loc[(df['td'] >= start_date) & (df['td'] <= end_date) & (df['indexnum'] == '000300.SH')]
             date_list = list(df['td'].unique())
             self.symbols = list(df.loc[df['td'] == date_list[0], 'code'])
 
@@ -90,8 +90,8 @@ class StockPool:
         :return: 返回数据
         """
         # 从数据库中获取股票数据
-        check_factor(factor_name)
-        connection = mysql_db()
+        check_factor(factor_name, self.password)
+        connection = mysql_db(self.password)
         sql = f"SELECT td, codenum, {factor_name} " \
               f"FROM astocks.market_deriv " \
               f"WHERE codenum IN %s AND td between {start_date} AND {end_date};"
@@ -99,7 +99,7 @@ class StockPool:
         cursor.execute(sql, (self.symbols,))  # 执行sql语句
         datas = cursor.fetchall()  # 获取查询结果
         datas = pd.DataFrame(datas)  # 转换为DataFrame格式
-        datas.columns = ['td', 'codenum', 'factor']  # 重命名列名
+        datas.columns = ['td', 'codenum', f'{factor_name}']  # 重命名列名
 
         datas = datas.dropna(axis=0, how='any')  # 删除空值，不过感觉没必要，因为在数据库连接时已经删除了空值
         self.datas = datas  # 保存数据
@@ -107,7 +107,7 @@ class StockPool:
         return self.datas
 
     def get_price(self, start_date, end_date):
-        connection = mysql_db()
+        connection = mysql_db(self.password)
         sql = f"SELECT td, codenum, close FROM astocks.market WHERE codenum IN %s AND td BETWEEN {start_date} AND {end_date};"
         cursor = connection.cursor()
         cursor.execute(sql, (self.symbols,))
@@ -119,13 +119,21 @@ class StockPool:
         datas['close'] = datas.groupby('codenum')['close'].apply(lambda x: x.fillna(method='ffill'))
         return datas
 
+    def get_index_price(self, start_date, end_date):
+        connection = mysql_db(self.password)
+        sql = f"SELECT td, close FROM astocks.indexprice WHERE td BETWEEN {start_date} AND {end_date} AND indexnum = '000300.SH';"
+        datas = pd.read_sql(sql, connection)
+        # 线性填充空值
+        datas['close'] = datas['close'].fillna(method='ffill')
+        return datas
+
 
 # 回测类
 class BackTest:
-    def __init__(self, factor_name, initial_capital=100000, symbols=None,
+    def __init__(self, factor_name, password, initial_capital=100000, symbols=None,
                  start_date=int(time.strftime('%Y%m%d', time.localtime(time.time() - 365 * 24 * 60 * 60))),
                  end_date=int(time.strftime('%Y%m%d', time.localtime(time.time()))),
-                 weights='equal', drawdown_num=5, days_for_optimize=50
+                 weights='equal', drawdown_num=5, days_for_optimize=50,
                  ):
         """
         :param factor_name: 因子名称
@@ -134,6 +142,8 @@ class BackTest:
         :param start_date: 起始日期
         :param end_date: 结束日期
         :param weights: 权重方式
+        :param drawdown_num: 最大回撤次数
+        :param days_for_optimize: 优化周期
         """
 
         # 参数合法性检查
@@ -147,7 +157,7 @@ class BackTest:
         # 初始化
         self.start_date = start_date
         self.end_date = end_date
-        self.pool = StockPool(symbols=symbols, start_date=start_date, end_date=end_date)
+        self.pool = StockPool(symbols=symbols, start_date=start_date, end_date=end_date, password=password)
         self.symbols = symbols
         symbols = self.pool.symbols
         self.account = Account(initial_capital=initial_capital, symbols=symbols)
@@ -158,26 +168,27 @@ class BackTest:
         self.turnover_dates = None
         self.optimizer = None
         self.days_for_optimize = days_for_optimize
+        self.password = password
 
     def run(self):
         # 获取数据并更新股票池
-        original_datas = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv')
-        # 取出td, codenum, PB三列
         days_before = get_days_before(self.start_date, self.days_for_optimize)
-        original_datas = original_datas[
-            (original_datas['td'] >= days_before) & (original_datas['td'] <= self.end_date)]
+        original_datas = self.pool.get_datas(factor_name=self.factor_name, start_date=days_before,
+                                             end_date=self.end_date)
+        # original_datas = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv')
         self.turnover_dates = list(
             original_datas[(original_datas['td'] >= self.start_date) & (original_datas['td'] <= self.end_date)][
                 'td'].unique())
-        original_datas = original_datas[['td', 'codenum', self.factor_name]]
-        original_datas[f'{self.factor_name}'] = 1 / original_datas[f'{self.factor_name}']
-        original_prices = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market.csv')
-        original_prices = original_prices[
-            (original_prices['td'] >= days_before) & (original_prices['td'] <= self.end_date)]
-        original_prices = original_prices[['td', 'codenum', 'close']]
+        # original_datas = original_datas[['td', 'codenum', self.factor_name]]
+        # original_datas[f'{self.factor_name}'] = 1 / original_datas[f'{self.factor_name}']
+        original_prices = self.pool.get_price(start_date=days_before, end_date=self.end_date)
         original_datas = original_datas.merge(original_prices, on=['td', 'codenum'])  # 合并数据
+        index_prices_datas = self.pool.get_index_price(self.start_date, self.end_date)
+        first_index_price = index_prices_datas.iloc[0]['close']
+        self.index_prices = []
         self.optimizer = PortfolioOptimizer(original_datas, free_risk_rate=0.03, days=self.days_for_optimize)  # 初始化优化器
         # self.turnover_dates = [20200910]
+        print(original_datas.head())
         for i, date in enumerate(self.turnover_dates):
             print('回测日期：', date)
             # 获取昨日股票池的今日价格
@@ -187,11 +198,11 @@ class BackTest:
             datas = original_datas[original_datas['td'] == date]  # 获取当前日期的数据
             datas = datas.sort_values([f'{self.factor_name}', 'codenum'], ascending=False)  # 按照因子大小和股票代码排序,降序
             datas = datas.reset_index(drop=True)  # 重置索引
-            datas = datas.head(int(len(datas['codenum'].tolist()) * 0.05))  # 取前10%股票
+            datas = datas.head(int(len(datas['codenum'].tolist()) * 0.2))  # 取前10%股票
             symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
             self.pool.symbols = symbols  # 获取当前日期的股票代码列表
             self.account.symbols = symbols  # 更新account的股票池
-            print('股票池：', self.pool.symbols)
+            print('股票池：', self.pool.symbols, '长度：', len(self.pool.symbols))
 
             # 初始化account的持仓数量字典
             for symbol in symbols:
@@ -204,6 +215,7 @@ class BackTest:
                 weights = self.optimizer.maxsharpe(symbols, date)
             else:
                 weights = np.ones(len(self.pool.symbols)) / (len(self.pool.symbols))  # 默认权重为等权重
+
             weights = pd.DataFrame(weights, index=symbols)  # 转换为DataFrame格式
             weights.columns = ['weights']
             # 合并datas和weights
@@ -213,7 +225,6 @@ class BackTest:
 
             # 保存持仓数量到account的持仓数量字典中
             for symbol in symbols:
-                # print('股票代码：', symbol)
                 self.account.update_position(symbol, datas.loc[datas['codenum'] == symbol, 'shares'].values[0])
 
             print('日期：', date)
@@ -225,9 +236,9 @@ class BackTest:
             print("持仓：", self.account.positions)
             self.account.value_history.append([date, self.account.portfolio_value])
 
-            # 更新账户股票池
-            # self.account.sell_all(prices)
-
+            index_price = index_prices_datas.loc[index_prices_datas['td'] == date, 'close'].values[
+                              0] * self.account.initial_capital / first_index_price
+            self.index_prices.append(index_price)
         self.account.update_return()  # 更新收益率
         self.account.update_volatility()  # 更新波动率
 
@@ -238,7 +249,7 @@ class BackTest:
         # 画图
         self.plot()
         self.plot_return()
-        self.RankIC(original_datas, original_prices, self.factor_name)
+        # self.RankIC(original_datas, original_prices, self.factor_name)
 
     # 定义绘图函数
     def plot(self):
@@ -389,11 +400,25 @@ class BackTest:
         plt.ylabel('RankIC')
         plt.show()
 
+    # 输出指标函数
+    def output(self, account):
+        print(1)
+
 
 if __name__ == '__main__':
     pd.set_option('display.max_rows', 30000)  # 设置最大行数
     pd.set_option('display.max_columns', 30)  # 设置最大列数
 
-    backtest = BackTest(factor_name='PE_TTM', start_date=20191231, end_date=20221231, drawdown_num=3,
-                        weights='maxsharpe')
+    # 输入密码，错误则重新输入
+    password = input('请输入密码：')
+    # 如果数据库链接失败，则重新输入密码
+    while True:
+        try:
+            conn = mysql_db(password=password)
+            break
+        except:
+            password = input('密码错误，请重新输入：')
+    print('数据库连接成功！开始回测！')
+
+    backtest = BackTest(factor_name='PE_TTM', start_date=20191231, end_date=20211231, drawdown_num=3, password=password)
     backtest.run()

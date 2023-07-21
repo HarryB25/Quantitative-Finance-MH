@@ -35,9 +35,9 @@ def is_valid_date(date):
     return True
 
 
-def check_factor(factor):
+def check_factor(factor, password):
     # 检查astocks.finance_deriv表中是否有名为factor的属性列
-    connection = mysql_db()  # 连接数据库
+    connection = mysql_db(password)  # 连接数据库
     sql = f"SELECT {factor} FROM astocks.market_deriv WHERE ;"
     try:
         cursor = connection.cursor()
