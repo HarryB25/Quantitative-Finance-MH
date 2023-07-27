@@ -29,10 +29,11 @@ def get_days_before(input_date, days):
 
 # 投资组合优化器
 class PortfolioOptimizer():
-    def __init__(self, data=None, risk_free_rate=0.03, days=None):
+    def __init__(self, data=None, risk_free_rate=0.03, days=None, subject_to_weight=True):
         self.data = data
         self.risk_free_rate = risk_free_rate
         self.days = days
+        self.subject_to_weight = subject_to_weight
 
     def set_data(self, data):
         self.data = data
@@ -46,11 +47,13 @@ class PortfolioOptimizer():
     def check(self):
         if self.data is None:
             raise ValueError('data is None, please set data first')
+        if self.days < 15:
+            raise ValueError('days should be greater than 15')
         if self.days is None:
             raise ValueError('days is None, please set days first')
 
     # 二次规划求解最小方差组合
-    def minvar(self, symbols, date, subject_to_weight=True):
+    def minvar(self, symbols, date):
         self.check()
         weight = cvx.Variable(len(symbols))
         # 读取date前days天的数据，计算每只股票的平均收益率和标准差
@@ -71,7 +74,7 @@ class PortfolioOptimizer():
         # s.t. weight.T * 1 = 1, weight >= 0, 如果subject_to_weight=True, weight <= 2 / len(symbols), 否则不加这个约束
         objective = cvx.Minimize(cvx.quad_form(weight, cov))
         # 是否加入权重约束
-        if subject_to_weight:
+        if self.subject_to_weight:
             constraints = [weight.T @ np.ones(len(symbols)) == 1, weight >= 0, weight <= 2 / len(symbols)]
         else:
             constraints = [weight.T @ np.ones(len(symbols)) == 1, weight >= 0]
@@ -80,10 +83,14 @@ class PortfolioOptimizer():
         prob = cvx.Problem(objective, constraints)
         prob.solve()
 
+        # 将小于1e-4的值设置为0
+        weight.value[np.abs(weight.value) < 1e-4] = 0
+        # 返回权重
+
         return weight.value
 
     # 求解最大夏普比例组合
-    def maxsharpe(self, symbols, date, subject_to_weight=True):
+    def maxsharpe(self, symbols, date):
         self.check()
         # 读取date前days天的数据，计算每只股票的平均收益率和标准差
         days_before = get_days_before(date, days=self.days)
@@ -113,14 +120,62 @@ class PortfolioOptimizer():
         # 设置约束条件（权重之和为1，权重非负，如果subject_to_weight=True, 权重不超过2 / len(symbols)，否则不加这个约束）
         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
                        {'type': 'ineq', 'fun': lambda x: x})
-        if subject_to_weight:
+        if self.subject_to_weight:
+            constraints = constraints + ({'type': 'ineq', 'fun': lambda x: 2 / len(symbols) - x},)
+
+        # 设置初始权重值（可以根据实际情况调整）
+        initial_weights = np.ones(len(symbols)) / len(symbols)
+        print('initial_weights.shape', initial_weights.shape)
+        print('total_return.shape', total_return.shape)
+
+        # 使用优化算法求解最大化夏普比率的问题
+        result = minimize(negative_sharpe_ratio, initial_weights, method='SLSQP', constraints=constraints)
+
+        # 获取最优权重向量
+        optimal_weights = result.x
+        # 将小于1e-4的权重置为0
+        optimal_weights[optimal_weights < 1e-4] = 0
+        return optimal_weights
+
+    # 求解最大效用组合
+    def maxutility(self, symbols, date, lamda=0.5):
+        self.check()
+        # 读取date前days天的数据，计算每只股票的平均收益率和标准差
+        days_before = get_days_before(date, days=self.days)
+        data = self.data[
+            (self.data['td'] < date) & (self.data['td'] >= days_before) & (self.data['codenum'].isin(symbols))].copy()
+        # 重置索引
+        data.reset_index(inplace=True)
+        # 计算每只股票的收益率
+        data['return'] = data.groupby('codenum')['close'].pct_change()
+        data.fillna(0, inplace=True)
+        panel = data.pivot_table(index='td', columns='codenum', values='return')
+        total_return = panel.sum(axis=0)
+        total_return = np.array(total_return)
+
+        # 计算每只股票的协方差矩阵
+        cov = panel.cov()
+
+        # 目标函数max((weight.T * total_return - lamda * weight.T * cov * weight)
+        # s.t. weight.T * 1 = 1, weight >= 0, 如果subject_to_weight=True, weight <= 2 / len(symbols), 否则不加这个约束
+
+        # 定义目标函数（负效用函数，因为minimize函数是用于最小化）
+        def negative_utility(weights):
+            expected_return = total_return.T @ weights
+            portfolio_std = np.sqrt(weights.T @ cov @ weights)
+            return -(expected_return - lamda * portfolio_std)
+
+        # 设置约束条件（权重之和为1，权重非负，如果subject_to_weight=True, 权重不超过2 / len(symbols)，否则不加这个约束）
+        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
+                       {'type': 'ineq', 'fun': lambda x: x})
+        if self.subject_to_weight:
             constraints = constraints + ({'type': 'ineq', 'fun': lambda x: 2 / len(symbols) - x},)
 
         # 设置初始权重值（可以根据实际情况调整）
         initial_weights = np.ones(len(symbols)) / len(symbols)
 
-        # 使用优化算法求解最大化夏普比率的问题
-        result = minimize(negative_sharpe_ratio, initial_weights, method='SLSQP', constraints=constraints)
+        # 使用优化算法求解最大化效用的问题
+        result = minimize(negative_utility, initial_weights, method='SLSQP', constraints=constraints)
 
         # 获取最优权重向量
         optimal_weights = result.x
