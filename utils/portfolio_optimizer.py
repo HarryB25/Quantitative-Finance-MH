@@ -10,7 +10,7 @@ from scipy.optimize import minimize
 from utils.database import mysql_db
 
 
-def get_days_before(input_date, days=50):
+def get_days_before(input_date, days):
     # 将输入日期从int格式转换为datetime对象
     input_date_str = str(input_date)
     year = int(input_date_str[:4])
@@ -29,13 +29,29 @@ def get_days_before(input_date, days=50):
 
 # 投资组合优化器
 class PortfolioOptimizer():
-    def __init__(self, data, free_risk_rate=0.03, days=50):
+    def __init__(self, data=None, risk_free_rate=0.03, days=None):
         self.data = data
-        self.free_risk_rate = free_risk_rate
+        self.risk_free_rate = risk_free_rate
         self.days = days
+
+    def set_data(self, data):
+        self.data = data
+
+    def set_days(self, days):
+        self.days = days
+
+    def set_risk_free_rate(self, risk_free_rate):
+        self.risk_free_rate = risk_free_rate
+
+    def check(self):
+        if self.data is None:
+            raise ValueError('data is None, please set data first')
+        if self.days is None:
+            raise ValueError('days is None, please set days first')
 
     # 二次规划求解最小方差组合
     def minvar(self, symbols, date, subject_to_weight=True):
+        self.check()
         weight = cvx.Variable(len(symbols))
         # 读取date前days天的数据，计算每只股票的平均收益率和标准差
         days_before = get_days_before(date, days=self.days)
@@ -68,9 +84,9 @@ class PortfolioOptimizer():
 
     # 求解最大夏普比例组合
     def maxsharpe(self, symbols, date, subject_to_weight=True):
-        weight = cvx.Variable(len(symbols))
-        # 读取date前50天的数据，计算每只股票的平均收益率和标准差
-        days_before = get_days_before(date, days=60)
+        self.check()
+        # 读取date前days天的数据，计算每只股票的平均收益率和标准差
+        days_before = get_days_before(date, days=self.days)
         data = self.data[
             (self.data['td'] < date) & (self.data['td'] >= days_before) & (self.data['codenum'].isin(symbols))].copy()
         # 重置索引
@@ -79,9 +95,8 @@ class PortfolioOptimizer():
         data['return'] = data.groupby('codenum')['close'].pct_change()
         data.fillna(0, inplace=True)
         panel = data.pivot_table(index='td', columns='codenum', values='return')
-        # 比较panel的所有列名和symbols，输出panel缺少的列名
-        not_in_panel = [symbol for symbol in symbols if symbol not in panel.columns]
-        total_return = panel.sum(axis=0).values  # 计算每只股票的总收益率
+        # 用weight和前self.days天的收益率加权平均计算每只股票的收益率total_return
+        total_return = panel.sum(axis=0) / self.days
         total_return = np.array(total_return)
 
         # 计算每只股票的协方差矩阵
@@ -94,7 +109,7 @@ class PortfolioOptimizer():
         def negative_sharpe_ratio(weights):
             expected_return = total_return.T @ weights
             portfolio_std = np.sqrt(weights.T @ cov @ weights)
-            return -(expected_return - self.free_risk_rate) / portfolio_std
+            return -(expected_return - self.risk_free_rate) / portfolio_std
 
         # 设置约束条件（权重之和为1，权重非负，如果subject_to_weight=True, 权重不超过2 / len(symbols)，否则不加这个约束）
         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
@@ -128,7 +143,8 @@ if __name__ == '__main__':
     # 线性填充每只股票的'close'列缺失值
     data['close'] = data.groupby('codenum')['close'].fillna(method='ffill')
     print("数据读取完成")
-    optimizer = PortfolioOptimizer(data)
+    optimizer = PortfolioOptimizer()
+    optimizer.set_data(data)
     weight = optimizer.minvar(
         ['000001.SZ', '000002.SZ', '000004.SZ', '000005.SZ', '000006.SZ', '000007.SZ', '000008.SZ', '000009.SZ'], date)
     weight_sharpe = optimizer.maxsharpe(
