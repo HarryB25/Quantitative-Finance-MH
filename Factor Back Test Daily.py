@@ -100,8 +100,7 @@ class StockPool:
         datas = cursor.fetchall()  # 获取查询结果
         datas = pd.DataFrame(datas)  # 转换为DataFrame格式
         datas.columns = ['td', 'codenum', f'{factor_name}']  # 重命名列名
-
-        datas = datas.dropna(axis=0, how='any')  # 删除空值，不过感觉没必要，因为在数据库连接时已经删除了空值
+        datas = datas.dropna(axis=0, how='any')  # 删除空值
         self.datas = datas  # 保存数据
         connection.close()  # 关闭数据库连接
         return self.datas
@@ -130,10 +129,10 @@ class StockPool:
 
 # 回测类
 class BackTest:
-    def __init__(self, factor_name, password, initial_capital=100000, symbols=None,
+    def __init__(self, factor_name, optimizer, password, initial_capital=100000, symbols=None,
                  start_date=int(time.strftime('%Y%m%d', time.localtime(time.time() - 365 * 24 * 60 * 60))),
                  end_date=int(time.strftime('%Y%m%d', time.localtime(time.time()))),
-                 weights='equal', drawdown_num=5, days_for_optimize=50,
+                 weights='equal', drawdown_num=5, days_for_optimize=10, risk_free_rate=0.03
                  ):
         """
         :param factor_name: 因子名称
@@ -147,6 +146,7 @@ class BackTest:
         """
 
         # 参数合法性检查
+
         is_valid_date(start_date)
         is_valid_date(end_date)
         assert isinstance(factor_name, str), "factor_name必须为字符串"
@@ -166,15 +166,19 @@ class BackTest:
         self.weights = weights
         self.drawdown_num = drawdown_num
         self.turnover_dates = None
-        self.optimizer = None
+        self.optimizer = optimizer
         self.days_for_optimize = days_for_optimize
         self.password = password
+        self.index_prices = []
+        self.drawdown = 0
+        self.risk_free_rate = risk_free_rate
 
     def run(self):
         # 获取数据并更新股票池
         days_before = get_days_before(self.start_date, self.days_for_optimize)
         original_datas = self.pool.get_datas(factor_name=self.factor_name, start_date=days_before,
                                              end_date=self.end_date)
+        print(original_datas.loc[original_datas['td'] == days_before, :].head())
         # original_datas = pd.read_csv('/Users/huanggm/Desktop/Quant/data/astocks_market_deriv.csv')
         self.turnover_dates = list(
             original_datas[(original_datas['td'] >= self.start_date) & (original_datas['td'] <= self.end_date)][
@@ -186,8 +190,8 @@ class BackTest:
         index_prices_datas = self.pool.get_index_price(self.start_date, self.end_date)
         first_index_price = index_prices_datas.iloc[0]['close']
         self.index_prices = []
-        self.optimizer = PortfolioOptimizer(original_datas, free_risk_rate=0.03, days=self.days_for_optimize)  # 初始化优化器
-        # self.turnover_dates = [20200910]
+        self.optimizer.set_data(original_datas)
+        self.optimizer.set_days(self.days_for_optimize)
         print(original_datas.head())
         for i, date in enumerate(self.turnover_dates):
             print('回测日期：', date)
@@ -198,7 +202,7 @@ class BackTest:
             datas = original_datas[original_datas['td'] == date]  # 获取当前日期的数据
             datas = datas.sort_values([f'{self.factor_name}', 'codenum'], ascending=False)  # 按照因子大小和股票代码排序,降序
             datas = datas.reset_index(drop=True)  # 重置索引
-            datas = datas.head(int(len(datas['codenum'].tolist()) * 0.2))  # 取前10%股票
+            datas = datas.head(int(len(datas['codenum'].tolist()) * 0.2) + 1)  # 取前10%股票
             symbols = datas['codenum'].tolist()  # 获取当前日期的股票代码列表
             self.pool.symbols = symbols  # 获取当前日期的股票代码列表
             self.account.symbols = symbols  # 更新account的股票池
@@ -234,13 +238,13 @@ class BackTest:
 
             # 输出持仓
             print("持仓：", self.account.positions)
-            self.account.value_history.append([date, self.account.portfolio_value])
 
             index_price = index_prices_datas.loc[index_prices_datas['td'] == date, 'close'].values[
                               0] * self.account.initial_capital / first_index_price
             self.index_prices.append(index_price)
         self.account.update_return()  # 更新收益率
         self.account.update_volatility()  # 更新波动率
+        print('changdu:', len(self.index_prices))
 
         # 将self.account.value_history保存为csv文件
         value_history = pd.DataFrame(self.account.value_history, columns=['date', 'portfolio_value'])
@@ -250,6 +254,7 @@ class BackTest:
         self.plot()
         self.plot_return()
         # self.RankIC(original_datas, original_prices, self.factor_name)
+        self.output(self.account, self.risk_free_rate)
 
     # 定义绘图函数
     def plot(self):
@@ -257,12 +262,16 @@ class BackTest:
         self.account.value_history = sorted(self.account.value_history, key=lambda x: x[0])
         date_objects = [datetime.strptime(str(date[0]), "%Y%m%d") for date in self.account.value_history]
         portfolio_value = pd.Series([i[1] for i in self.account.value_history])
+        index_prices = pd.Series(self.index_prices)
+        # 超额收益率
+        excess_return = portfolio_value - index_prices
         # 计算每次回撤
         previous_peak = portfolio_value.cummax()
         peaks = portfolio_value[portfolio_value == previous_peak].index.tolist()
 
         drawdown = (previous_peak - portfolio_value) / previous_peak
         max_drawdown = drawdown.max()
+        self.drawdown = max_drawdown
         max_drawdown_idx = drawdown.idxmax()
 
         # 计算回撤个数
@@ -296,17 +305,31 @@ class BackTest:
         # 绘制最大的drawdown_num个回撤，使其背景为灰色
 
         # 绘制价格序列图
-        plt.figure(figsize=(15, 5))
+        plt.figure(figsize=(15, 10))
         plt.plot(date_objects, portfolio_value)
+        plt.plot(date_objects, index_prices)
+        # plt.plot(date_objects, excess_return)
+        plt.legend(['Portfolio Value', 'Index Prices', 'Excess Return'])
+        # 填充超额收益率的区域
+        plt.fill_between(date_objects, excess_return, 0, where=excess_return > 0, facecolor='green', alpha=0.2)
+        # Q：如何设置副坐标轴
+        # A：使用plt.twinx()函数
+        # Q：如何让excess_return的填充
         plt.xlabel('Date')
         plt.ylabel('Portfolio Value')
         plt.title('Portfolio Value Series')
 
+        # 计算起始时间self.start_date和结束时间self.end_date间隔的天数
+        start_date = datetime.strptime(str(self.start_date), "%Y%m%d")
+        end_date = datetime.strptime(str(self.end_date), "%Y%m%d")
+        days = (end_date - start_date).days
+
         # 绘制回撤的箭头
         arrow_y = portfolio_value[start_idx]
         arrow_text = f'{max_drawdown:.2%}'
+        text_x = min(start_idx + int(0.05 * days) + 1, len(date_objects) - 1)
         plt.annotate(arrow_text, xy=(date_objects[start_idx], arrow_y),
-                     xytext=(date_objects[start_idx + 1], arrow_y),
+                     xytext=(date_objects[text_x], arrow_y),
                      arrowprops=dict(facecolor='red', arrowstyle='->'))
         # 在end_idx处标注一个绿色的点
         plt.plot(date_objects[end_idx], portfolio_value[end_idx], 'o', color='g')
@@ -401,16 +424,78 @@ class BackTest:
         plt.show()
 
     # 输出指标函数
-    def output(self, account):
-        print(1)
+    def output(self, account, min_annual_return=0.03):
+        portfolio_value = [i[1] for i in account.value_history]  # 价值
+        daliy_return = [portfolio_value[i] / portfolio_value[i - 1] - 1 for i in
+                        range(1, len(portfolio_value))]  # 每日收益率
+        daliy_index_return = [self.index_prices[i] / self.index_prices[i - 1] - 1 for i in
+                              range(1, len(self.index_prices))]  # 每日指数收益率
 
+        T = len(portfolio_value)  # 计算交易日天数
+        # 计算年化收益率
+        annual_return = (portfolio_value[-1] / portfolio_value[0]) ** (260 / T) - 1
+        index_annual_return = (self.index_prices[-1] / self.index_prices[0]) ** (260 / T) - 1
+        print('年化收益率：', annual_return)
+        # 计算年化波动率
+        annual_volatility = np.std(daliy_return) * np.sqrt(260)
+        # 计算相对回报
+        relative_return = portfolio_value[-1] / portfolio_value[0] - self.index_prices[-1] / self.index_prices[0]
+        print('相对回报：', relative_return)
+        # 计算Beta
+        beta = np.cov(daliy_return, daliy_index_return)[0][1] / np.var(daliy_index_return)
+        print('Beta：', beta)
+        # 计算Alpha
+        alpha = annual_return - beta * index_annual_return
+        print('Alpha：', alpha)
+        # 最小年化收益率的每日收益率
+        min_annual_return_daily = (1 + min_annual_return) ** (1 / 260) - 1
+        # 计算下行风险（downrisk）
+        downrisk = np.std([i for i in daliy_return if i < min_annual_return_daily])
+        print('下行风险：', downrisk)
+        # 计算信息比率
+        excess_return = [daliy_return[i] - daliy_index_return[i] for i in range(len(daliy_return))]
+        annual_return_mean = np.mean(excess_return) * 260
+        annual_return_std = np.std(excess_return) * np.sqrt(260)
+        IR = annual_return_mean / annual_return_std
+        print('信息比率：', IR)
+        # 计算詹森指数（Jensen's Alpha）
+        Jensen_Alpha = (annual_return - min_annual_return * 0.01) - beta * (
+                    index_annual_return - min_annual_return * 0.01)
+        print('詹森指数：', Jensen_Alpha)
+        # 计算最大回撤
+        drawdown = self.drawdown
+        print('最大回撤：', drawdown)
+        # 计算决策系数R2
+        R2 = np.sum([(daliy_return[i] - np.mean(daliy_return)) for i in range(len(daliy_return))]) ** 2 / np.sum(
+            [(daliy_index_return[i] - np.mean(daliy_index_return)) for i in range(len(daliy_index_return))]) ** 2
+        print('决策系数R2：', R2)
+        # 计算夏普比率
+        sharpe_ratio = (annual_return - min_annual_return * 0.01) / annual_volatility
+        print('夏普比率：', sharpe_ratio)
+        # 计算索提诺比率
+        sortino_ratio = (annual_return - min_annual_return * 0.01) / downrisk
+        print('索提诺比率：', sortino_ratio)
+        # 计算跟踪误差
+        tracking_error = np.std(excess_return) * np.sqrt(260)
+        print('跟踪误差：', tracking_error)
+        # 计算特雷诺比率
+        treynor_ratio = (annual_return - min_annual_return * 0.01) / beta
+        print('特雷诺比率：', treynor_ratio)
+        # 计算相关系数
+        correlation_coefficient = np.corrcoef(daliy_return, daliy_index_return)[0][1]
+        print('相关系数：', correlation_coefficient)
+        # 计算半方差
+        semi_variance = np.sum([(min_annual_return_daily - daliy_return[i]) ** 2 for i in range(len(daliy_return)) if
+                                daliy_return[i] < min_annual_return_daily]) / len(daliy_return)
+        print('半方差：', semi_variance)
 
 if __name__ == '__main__':
     pd.set_option('display.max_rows', 30000)  # 设置最大行数
     pd.set_option('display.max_columns', 30)  # 设置最大列数
 
     # 输入密码，错误则重新输入
-    password = input('请输入密码：')
+    # password = input('请输入密码：')
+    password = 'MH#123456'
     # 如果数据库链接失败，则重新输入密码
     while True:
         try:
@@ -420,5 +505,8 @@ if __name__ == '__main__':
             password = input('密码错误，请重新输入：')
     print('数据库连接成功！开始回测！')
 
-    backtest = BackTest(factor_name='PE_TTM', start_date=20191231, end_date=20211231, drawdown_num=3, password=password)
+    optimizer = PortfolioOptimizer()
+
+    backtest = BackTest(factor_name='PB', optimizer=optimizer, start_date=20191231, end_date=20211231,
+                        drawdown_num=3, password=password, weights='maxsharpe')
     backtest.run()
