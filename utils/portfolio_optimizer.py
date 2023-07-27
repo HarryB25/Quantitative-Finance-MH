@@ -95,8 +95,7 @@ class PortfolioOptimizer():
         data['return'] = data.groupby('codenum')['close'].pct_change()
         data.fillna(0, inplace=True)
         panel = data.pivot_table(index='td', columns='codenum', values='return')
-        # 用weight和前self.days天的收益率加权平均计算每只股票的收益率total_return
-        total_return = panel.sum(axis=0) / self.days
+        total_return = panel.sum(axis=0)
         total_return = np.array(total_return)
 
         # 计算每只股票的协方差矩阵
